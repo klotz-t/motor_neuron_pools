@@ -94,6 +94,68 @@ def convolutive_mixture(
 
     return emg
 
+def dynamic_convolutive_mixture(
+        muaps: np.ndarray, 
+        spikes: dict,
+        position: np.ndarray, 
+        fsamp: float = 2048, 
+):
+    """
+    Obtain dynamic EMG through a convolutive mixture
+    of spikes and position dependent muaps 
+
+    Parameters
+    ----------
+    muaps : np.ndarray 
+        Array of muaps with shape ``(units, positions, channels, samples)`` 
+
+    spikes : dict
+        Dictonary of spike times (in seconds)
+
+    position : np.ndarray
+        Array encoding the position index 
+    
+    fsamp : float , default 2048
+        Sampling frequency in Hz
+
+    method : {"sparse", "fft_conv"}  , default sparse
+        Method used for the convolution. If "sparse" (default), 
+        the function loops over all spikes and inserts 
+        the given waveform templates. If "fft_conv" the signal 
+        is reconstructed by convolving (fft-based)
+        the waveform with the spike train.  
+
+    Returns
+    -------
+
+    emg : np.ndarray 
+        EMG signal of shape ``(n_channels, n_samples)``
+
+    """
+
+
+    nunits = muaps.shape[0]
+    nchan = muaps.shape[1]
+    width = muaps.shape[2]
+    nsamples = position.shape[0] 
+    emg = np.zeros((nchan, nsamples))
+
+    for mu_idx in range(nunits):
+
+        mu_spikes = (np.array(spikes[mu_idx]) * fsamp).astype(int)
+
+        if len(mu_spikes) == 0:
+            continue
+
+        comp_sig = np.zeros_like(emg)
+        for s in mu_spikes:
+            pos_idx = position[s]
+            comp_sig[:, s:s+width] = muaps[mu_idx, pos_idx :, :]
+
+        emg += comp_sig
+
+    return emg
+
 def generate_emg_noise(
     n_channels,
     n_samples,
@@ -239,63 +301,93 @@ def generate_emg_noise(
 
     return noise
 
-def moving_grid(emg, x_center, y_center, sx=13, sy=5, spacing=4):
+
+def moving_grid(
+    emg,
+    x_center,
+    y_center,
+    sx=13,
+    sy=5,
+    reference_spacing=4.0,
+    moving_spacing=4.0,
+):
     """
-    Function for obtaining non-stationary EMG signals
-    by virtually moving a small EMG grid over one 
-    large grid
+    Obtain non-stationary EMG signals by virtually moving a small
+    EMG grid over a larger reference grid.
 
     Parameters
     ----------
-
     emg : ndarray
-        EMG data of shape ``(rows, columns, samples)``
+        Reference EMG data of shape (rows, columns, samples).
 
     x_center : ndarray
-        x coordinate of the grid center in mm with 
-        shape ``(samples, )``
+        X coordinate of the virtual grid center in mm,
+        with shape (samples,).
 
     y_center : ndarray
-        y coordinate of the grid center in mm with 
-        shape ``(samples, )``
+        Y coordinate of the virtual grid center in mm,
+        with shape (samples,).
 
-    sx : int , default 13
-        Number of rows of the virtual grid
+    sx : int, default 13
+        Number of rows in the virtual grid.
 
-    sy : int , default 5,
-        Number of columns of the virtual grid
+    sy : int, default 5
+        Number of columns in the virtual grid.
 
-    spacing : float , default 
-        Interelectrode distance in mm
-    
+    reference_spacing : float, default 4.0
+        Interelectrode distance of the reference grid in mm.
+
+    moving_spacing : float, default 4.0
+        Interelectrode distance of the virtual moving grid in mm.
+
+    Returns
+    -------
+    new_emg : ndarray
+        Interpolated EMG data of shape ``(sx, sy, samples)``.
+        Values outside the reference grid are set to NaN.
     """
-
     _, _, nt = emg.shape
 
-    # Subgrid coordinates relative to its center, in mm
-    dx = (np.arange(sx) - (sx - 1) / 2) * spacing
-    dy = (np.arange(sy) - (sy - 1) / 2) * spacing
+    x_center = np.asarray(x_center)
+    y_center = np.asarray(y_center)
 
-    # Convert physical coordinates to array indices
-    ix = (x_center[:, None, None] + dx[None, :, None]) / spacing
-    iy = (y_center[:, None, None] + dy[None, None, :]) / spacing
+    if x_center.shape != (nt,) or y_center.shape != (nt,):
+        raise ValueError(
+            "x_center and y_center must each have shape (samples,)."
+        )
+
+    if reference_spacing <= 0 or moving_spacing <= 0:
+        raise ValueError("Grid spacings must be positive.")
+
+    # Virtual electrode coordinates relative to the grid center (mm).
+    dx = (np.arange(sx) - (sx - 1) / 2) * moving_spacing
+    dy = (np.arange(sy) - (sy - 1) / 2) * moving_spacing
+
+    # Physical coordinates of each virtual electrode (mm).
+    x = x_center[:, None, None] + dx[None, :, None]
+    y = y_center[:, None, None] + dy[None, None, :]
+
+    # Convert physical coordinates to reference-grid indices.
+    ix = x / reference_spacing
+    iy = y / reference_spacing
 
     new_emg = np.empty((sx, sy, nt), dtype=float)
 
     for t in range(nt):
         coords = np.array([
             np.broadcast_to(ix[t], (sx, sy)),
-            np.broadcast_to(iy[t], (sx, sy))
+            np.broadcast_to(iy[t], (sx, sy)),
         ])
 
         new_emg[:, :, t] = map_coordinates(
             emg[:, :, t],
             coords,
-            order=1,           # Bilinear interpolation
+            order=1,
             mode="constant",
-            cval=np.nan
+            cval=np.nan,
         )
 
     return new_emg
+
 
 
